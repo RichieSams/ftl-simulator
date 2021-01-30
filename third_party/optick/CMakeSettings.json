@@ -1,0 +1,27 @@
+﻿{
+  "configurations": [
+    {
+      "name": "x64-Debug",
+      "generator": "Ninja",
+      "configurationType": "Debug",
+      "buildRoot": "${projectDir}\\out\\build\\${name}",
+      "installRoot": "${projectDir}\\out\\install\\${name}",
+      "cmakeCommandArgs": "",
+      "buildCommandArgs": "-v",
+      "ctestCommandArgs": "",
+      "inheritEnvironments": [ "msvc_x64_x64" ],
+      "variables": [
+        {
+          "name": "OPTICK_BUILD_GUI_APP",
+          "value": "False",
+          "type": "BOOL"
+        },
+        {
+          "name": "OPTICK_USE_VULKAN",
+          "value": "True",
+          "type": "BOOL"
+        }
+      ]
+    }
+  ]
+}
