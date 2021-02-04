@@ -22,68 +22,27 @@
  * limitations under the License.
  */
 
+#include "profiler.h"
+
 #include "ftl/task_counter.h"
 #include "ftl/task_scheduler.h"
-
-#include "optick.h"
 
 #include <array>
 #include <stdint.h>
 #include <stdio.h>
 #include <thread>
 
-class ProfilerEventHandler {
-public:
-	ProfilerEventHandler(ftl::TaskScheduler *taskScheduler)
-	        : m_taskScheduler(taskScheduler) {
-	}
-
-private:
-	ftl::TaskScheduler *m_taskScheduler;
-	std::vector<Optick::EventStorage *> m_fiberEventStorages;
-
-public:
-	void OnFibersCreated(unsigned fiberCount) {
-		m_fiberEventStorages.resize(fiberCount);
-		for (unsigned i = 0; i < fiberCount; ++i) {
-			Optick::RegisterFiber(i, &m_fiberEventStorages[i]);
-		}
-	}
-	void OnFiberStateChange(unsigned fiberIndex, ftl::FiberState newState) {
-		Optick::EventStorage **currentThreadStorageSlot = Optick::GetEventStorageSlotForCurrentThread();
-
-		// Profile session is not active
-		if (*currentThreadStorageSlot == nullptr) {
-			return;
-		}
-
-		if (fiberIndex > m_fiberEventStorages.size()) {
-			printf("fiberIndex was too large. Received %u, expected < %zd\n", fiberIndex, m_fiberEventStorages.size());
-			return;
-		}
-
-		Optick::EventStorage *fiberStorage = m_fiberEventStorages[fiberIndex];
-		switch (newState) {
-		case ftl::FiberState::Attached:
-			Optick::FiberSyncData::AttachToThread(fiberStorage, m_taskScheduler->GetCurrentThreadIndex());
-			break;
-		case ftl::FiberState::Detached:
-			Optick::FiberSyncData::DetachFromThread(fiberStorage);
-			break;
-		}
-	}
-};
-
 void Consumer(ftl::TaskScheduler * /*scheduler*/, void *arg) {
-	OPTICK_EVENT();
+	PROFILE_SPAN("Test");
+
 	auto *globalCounter = reinterpret_cast<std::atomic<unsigned> *>(arg);
 
 	globalCounter->fetch_add(1);
-	std::this_thread::sleep_for(std::chrono::microseconds(500));
+	//std::this_thread::sleep_for(std::chrono::microseconds(500));
 }
 
 void Producer(ftl::TaskScheduler *taskScheduler, void *arg) {
-	OPTICK_EVENT();
+	PROFILE_SPAN("Test");
 	constexpr unsigned kNumConsumerTasks = 50U;
 
 	auto *tasks = new ftl::Task[kNumConsumerTasks];
@@ -92,7 +51,7 @@ void Producer(ftl::TaskScheduler *taskScheduler, void *arg) {
 	}
 
 	{
-		OPTICK_EVENT("Producer subsection 1");
+		PROFILE_SPAN("Test", "Producer subsection 1");
 		ftl::TaskCounter counter1(taskScheduler);
 		taskScheduler->AddTasks(kNumConsumerTasks, tasks, ftl::TaskPriority::Low, &counter1);
 
@@ -100,7 +59,7 @@ void Producer(ftl::TaskScheduler *taskScheduler, void *arg) {
 	}
 
 	{
-		OPTICK_EVENT("Producer subsection 2");
+		PROFILE_SPAN("Test", "Producer subsection 2");
 
 		ftl::TaskCounter counter2(taskScheduler);
 		taskScheduler->AddTasks(kNumConsumerTasks, tasks, ftl::TaskPriority::Low, &counter2);
@@ -113,33 +72,28 @@ void Producer(ftl::TaskScheduler *taskScheduler, void *arg) {
 }
 
 int main() {
-	Optick::StartCapture();
-
 	ftl::TaskScheduler taskScheduler;
-
-	ProfilerEventHandler eventHandler(&taskScheduler);
+	InitProfiler(&taskScheduler);
 
 	ftl::TaskSchedulerInitOptions options;
 	options.Behavior = ftl::EmptyQueueBehavior::Sleep;
 	options.FiberPoolSize = 200;
 	options.ThreadPoolSize = 12;
-	options.Callbacks.Context = &eventHandler;
 	options.Callbacks.OnFibersCreated = [](void *context, unsigned fiberCount) {
-		ProfilerEventHandler *handler = reinterpret_cast<ProfilerEventHandler *>(context);
-		handler->OnFibersCreated(fiberCount);
+		RegisterFibers(fiberCount);
 	};
-	options.Callbacks.OnWorkerThreadStarted = [](void *context, unsigned threadIndex) {
-		char buffer[512];
-		snprintf(buffer, sizeof(buffer), "ftl-worker %u", threadIndex);
-
-		Optick::RegisterThread(buffer);
-	};
-	options.Callbacks.OnWorkerThreadEnded = [](void *context, unsigned threadIndex) {
-		Optick::UnRegisterThread(false);
+	options.Callbacks.OnThreadsCreated = [](void *context, unsigned threadCount) {
+		RegisterThreads(threadCount);
 	};
 	options.Callbacks.OnFiberStateChanged = [](void *context, unsigned fiberIndex, ftl::FiberState newState) {
-		ProfilerEventHandler *handler = reinterpret_cast<ProfilerEventHandler *>(context);
-		handler->OnFiberStateChange(fiberIndex, newState);
+		switch (newState) {
+		case ftl::FiberState::Attached:
+			FiberResume(fiberIndex);
+			break;
+		case ftl::FiberState::Detached:
+			FiberSuspend(fiberIndex);
+			break;
+		}
 	};
 
 	if (taskScheduler.Init(options) < 0) {
@@ -151,7 +105,7 @@ int main() {
 	std::array<ftl::Task, kNumProducerTasks> tasks;
 
 	for (int i = 0; i < 2; ++i) {
-		OPTICK_FRAME("MainThread");
+		PROFILE_SPAN("", "Frame");
 
 		std::atomic<unsigned> globalCounter(0U);
 		FTL_VALGRIND_HG_DISABLE_CHECKING(&globalCounter, sizeof(globalCounter));
@@ -167,6 +121,6 @@ int main() {
 		printf("Counter value: %u\n", globalCounter.load());
 	}
 
-	Optick::StopCapture();
-	Optick::SaveCapture("ftl-simulator.opt");
+	printf("%s", DumpProfiler().c_str());
+	TermProfiler();
 }

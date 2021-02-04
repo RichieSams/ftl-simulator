@@ -25,6 +25,10 @@
 cmake_minimum_required(VERSION 3.8)
 project(ftl-simulation CXX)
 
+if (MSVC)
+	add_definitions(-D_ITERATOR_DEBUG_LEVEL=0)
+endif()
+
 # Add third party libs
 add_subdirectory(third_party)
 
