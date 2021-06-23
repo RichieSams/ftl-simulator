@@ -26,70 +26,28 @@
 
 #include "ftl/task_scheduler.h"
 
-#include <deque>
-#include <mutex>
-#include <sstream>
-#include <stdint.h>
-#include <vector>
-
-enum class EventType {
-	SpanStart,
-	SpanEnd,
-	FiberSuspend,
-	FiberResume,
-};
-
-class ProfilerState {
-public:
-	ProfilerState(ftl::TaskScheduler *taskScheduler)
-	        : m_taskScheduler(taskScheduler),
-	          m_spanStack(),
-	          m_savedSpanStacks(),
-	          m_buffer(), m_bufferLock() {
-	}
-
-private:
-	ftl::TaskScheduler *m_taskScheduler;
-
-	std::vector<std::deque<uint64_t>> m_spanStack;       // per thread
-	std::vector<std::deque<uint64_t>> m_savedSpanStacks; // per fiber
-
-	std::stringstream m_buffer;
-	std::mutex m_bufferLock;
-
-public:
-	void RegisterThreads(unsigned threadCount);
-	void RegisterFibers(unsigned fiberCount);
-
-	void SpanStart(const char *category, const char *name);
-	void SpanEnd();
-
-	void FiberSuspend(unsigned fiberIndex);
-	void FiberResume(unsigned fiberIndex);
-
-	std::string Dump();
-};
-
-void InitProfiler(ftl::TaskScheduler *taskScheduler);
-std::string DumpProfiler();
+bool InitProfiler(ftl::TaskScheduler *taskScheduler, const char *outputFilePath);
+void CloseProfileFile();
 void TermProfiler();
 
-void RegisterThreads(unsigned threadCount);
 void RegisterFibers(unsigned fiberCount);
 
-void SpanStart(const char *category, const char *name);
-void SpanEnd();
+uint64_t SpanStart(const char *category, const char *name);
+void SpanEnd(uint64_t spanId);
 void FiberSuspend(unsigned fiberIndex);
 void FiberResume(unsigned fiberIndex);
 
 class ProfileSpan {
 public:
 	ProfileSpan(const char *category, const char *name) {
-		SpanStart(category, name);
+		m_spanId = SpanStart(category, name);
 	}
 	~ProfileSpan() {
-		SpanEnd();
+		SpanEnd(m_spanId);
 	}
+
+private:
+	uint64_t m_spanId;
 };
 
 // General utility macro

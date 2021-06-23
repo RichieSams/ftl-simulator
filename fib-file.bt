@@ -1,0 +1,59 @@
+//------------------------------------------------
+//--- 010 Editor v11.0.1 Binary Template
+//
+//      File: 
+//   Authors: 
+//   Version: 
+//   Purpose: 
+//  Category: 
+// File Mask: 
+//  ID Bytes: 
+//   History: 
+//------------------------------------------------
+LittleEndian();
+
+struct SPAN_START {
+    uint16 categoryLen;
+    char category[categoryLen];
+    uint16 nameLen;
+    char name[nameLen];
+    uint64 tid;
+    uint64 spanId;
+    uint64 timeStamp;
+};
+
+struct SPAN_END {
+    uint64 tid;
+    uint64 spanId;
+    uint64 timeStamp;
+};
+
+struct SPAN_SUSPEND {
+    uint64 tid;
+    uint64 suspendId;
+    uint64 timeStamp;
+};
+
+struct SPAN_RESUME {
+    uint64 tid;
+    uint64 suspendId;
+    uint64 timeStamp;
+};
+
+
+struct EVENT {
+    byte type;
+    if ( type == 0) {
+        SPAN_START data;
+    } else if ( type == 1) {
+        SPAN_END data;
+    } else if ( type == 2) {
+        SPAN_SUSPEND data;
+    } else if (type == 3) {
+        SPAN_RESUME data;
+    } else {
+        fail;
+    }
+};
+
+EVENT events[20000] <optimize=false>;

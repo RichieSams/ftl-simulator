@@ -24,9 +24,53 @@
 
 #include "profiler.h"
 
-#include <thread>
+#include "serialization.h"
 
+#include <deque>
+#include <errno.h>
+#include <mutex>
+#include <sstream>
+#include <stdint.h>
+#include <stdio.h>
+#include <thread>
+#include <vector>
+
+// Globals
+
+class ProfilerState;
 static ProfilerState *g_profilerState;
+
+// Definitions
+
+class ProfilerState {
+public:
+	ProfilerState()
+	        : m_taskScheduler(nullptr),
+	          m_savedSuspendIds(),
+	          m_output(nullptr), m_outputLock() {
+	}
+
+private:
+	ftl::TaskScheduler *m_taskScheduler;
+
+	std::vector<uint64_t> m_savedSuspendIds; // Per fiber
+
+	FILE *m_output;
+	std::mutex m_outputLock;
+
+public:
+	bool Init(ftl::TaskScheduler *taskScheduler, const char *outputFilePath);
+
+	void RegisterFibers(unsigned fiberCount);
+
+	uint64_t SpanStart(const char *category, const char *name);
+	void SpanEnd(uint64_t spanId);
+
+	void FiberSuspend(unsigned fiberIndex);
+	void FiberResume(unsigned fiberIndex);
+
+	void Close();
+};
 
 uint64_t hash(uint64_t x) {
 	x = (x ^ (x >> 30)) * UINT64_C(0xbf58476d1ce4e5b9);
@@ -45,12 +89,13 @@ inline uint64_t hash_combine(uint64_t seed, const uint64_t &v, Rest... rest) {
 	return hash_combine(seed, rest...);
 }
 
-void InitProfiler(ftl::TaskScheduler *taskScheduler) {
-	g_profilerState = new ProfilerState(taskScheduler);
+bool InitProfiler(ftl::TaskScheduler *taskScheduler, const char *outputFilePath) {
+	g_profilerState = new ProfilerState();
+	return g_profilerState->Init(taskScheduler, outputFilePath);
 }
 
-std::string DumpProfiler() {
-	return g_profilerState->Dump();
+void CloseProfileFile() {
+	g_profilerState->Close();
 }
 
 void TermProfiler() {
@@ -58,20 +103,16 @@ void TermProfiler() {
 	g_profilerState = nullptr;
 }
 
-void RegisterThreads(unsigned threadCount) {
-	g_profilerState->RegisterThreads(threadCount);
-}
-
 void RegisterFibers(unsigned fiberCount) {
 	g_profilerState->RegisterFibers(fiberCount);
 }
 
-void SpanStart(const char *category, const char *name) {
-	g_profilerState->SpanStart(category, name);
+uint64_t SpanStart(const char *category, const char *name) {
+	return g_profilerState->SpanStart(category, name);
 }
 
-void SpanEnd() {
-	g_profilerState->SpanEnd();
+void SpanEnd(uint64_t spanId) {
+	g_profilerState->SpanEnd(spanId);
 }
 
 void FiberSuspend(unsigned fiberIndex) {
@@ -82,69 +123,71 @@ void FiberResume(unsigned fiberIndex) {
 	g_profilerState->FiberResume(fiberIndex);
 }
 
-void ProfilerState::RegisterThreads(unsigned threadCount) {
-	m_spanStack.resize(threadCount);
+bool ProfilerState::Init(ftl::TaskScheduler *taskScheduler, const char *outputFilePath) {
+	m_taskScheduler = taskScheduler;
+	m_output = fopen(outputFilePath, "wb");
+	if (m_output == nullptr) {
+		printf("Failed to open output file: %d", errno);
+		return false;
+	}
+	if (setvbuf(m_output, nullptr, _IOFBF, 64 * 1024) != 0) {
+		printf("Failed to set the buffer size for output file: %d", errno);
+		return false;
+	}
+
+	return true;
 }
 
 void ProfilerState::RegisterFibers(unsigned fiberCount) {
-	m_savedSpanStacks.resize(fiberCount);
+	m_savedSuspendIds.resize(fiberCount);
+	for (unsigned i = 0; i < fiberCount; ++i) {
+		m_savedSuspendIds[i] = std::numeric_limits<uint64_t>::max();
+	}
 }
 
-void ProfilerState::SpanStart(const char *category, const char *name) {
+uint64_t ProfilerState::SpanStart(const char *category, const char *name) {
 	uint64_t tid = m_taskScheduler->GetCurrentThreadIndex();
-	uint64_t now = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::high_resolution_clock::now().time_since_epoch()).count();
+	uint64_t now = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now().time_since_epoch()).count();
 
 	uint64_t spanId = hash_combine(0, tid, now);
-	m_spanStack[tid].push_back(spanId);
 
-	std::lock_guard<std::mutex> guard(m_bufferLock);
-	m_buffer << "SpanStart " << category << " " << name << " threadId: " << tid << " spanId: " << spanId << " now: " << now << "\n";
+	std::lock_guard<std::mutex> guard(m_outputLock);
+	WriteSpanStart(m_output, category, name, tid, spanId, now);
+
+	return spanId;
 }
 
-void ProfilerState::SpanEnd() {
+void ProfilerState::SpanEnd(uint64_t spanId) {
 	uint64_t tid = m_taskScheduler->GetCurrentThreadIndex();
-	uint64_t now = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::high_resolution_clock::now().time_since_epoch()).count();
+	uint64_t now = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now().time_since_epoch()).count();
 
-	uint64_t spanId = m_spanStack[tid].back();
-	m_spanStack[tid].pop_back();
-
-	std::lock_guard<std::mutex> guard(m_bufferLock);
-	m_buffer << "SpanEnd threadId: " << tid << " spanId: " << spanId << " now: " << now << "\n";
+	std::lock_guard<std::mutex> guard(m_outputLock);
+	WriteSpanEnd(m_output, tid, spanId, now);
 }
 
 void ProfilerState::FiberSuspend(unsigned fiberIndex) {
 	uint64_t tid = m_taskScheduler->GetCurrentThreadIndex();
+	uint64_t now = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now().time_since_epoch()).count();
 
-	// Save the stack for resuming later
-	m_savedSpanStacks[fiberIndex] = m_spanStack[tid];
+	uint64_t suspendId = hash_combine(0, tid, now);
+	m_savedSuspendIds[fiberIndex] = suspendId;
 
-	// Issue SpanSuspend events for the stack
-	uint64_t now = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::high_resolution_clock::now().time_since_epoch()).count();
-
-	std::lock_guard<std::mutex> guard(m_bufferLock);
-	for (auto iter = m_spanStack[tid].rbegin(); iter != m_spanStack[tid].rend(); ++iter) {
-		m_buffer << "SpanSuspend threadId: " << tid << " spanId: " << *iter << " now: " << now << "\n";
-	}
-	m_spanStack[tid].clear();
+	std::lock_guard<std::mutex> guard(m_outputLock);
+	WriteSpanSuspend(m_output, tid, suspendId, now);
 }
 
 void ProfilerState::FiberResume(unsigned fiberIndex) {
 	uint64_t tid = m_taskScheduler->GetCurrentThreadIndex();
+	uint64_t now = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now().time_since_epoch()).count();
 
-	m_spanStack[tid] = m_savedSpanStacks[fiberIndex];
-	m_savedSpanStacks[fiberIndex].clear();
+	uint64_t suspendId = m_savedSuspendIds[fiberIndex];
 
-	// Issue SpanResume events for the stack
-	uint64_t now = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::high_resolution_clock::now().time_since_epoch()).count();
-
-	std::lock_guard<std::mutex> guard(m_bufferLock);
-	for (auto iter = m_spanStack[tid].begin(); iter != m_spanStack[tid].end(); ++iter) {
-		m_buffer << "SpanResume threadId: " << tid << " spanId: " << *iter << " now: " << now << "\n";
-	}
+	std::lock_guard<std::mutex> guard(m_outputLock);
+	WriteSpanResume(m_output, tid, suspendId, now);
 }
 
-std::string ProfilerState::Dump() {
-	std::lock_guard<std::mutex> guard(m_bufferLock);
-
-	return m_buffer.str();
+void ProfilerState::Close() {
+	std::lock_guard<std::mutex> guard(m_outputLock);
+	fflush(m_output);
+	fclose(m_output);
 }

@@ -26,6 +26,8 @@ set(FTL_SIM_MAIN_SRC
     main.cpp
     profiler.cpp
     profiler.h
+    serialization.cpp
+    serialization.h
 )
 
 set(FTL_SIM_WORKLOADS_SRC

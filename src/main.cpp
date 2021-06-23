@@ -73,17 +73,14 @@ void Producer(ftl::TaskScheduler *taskScheduler, void *arg) {
 
 int main() {
 	ftl::TaskScheduler taskScheduler;
-	InitProfiler(&taskScheduler);
+	InitProfiler(&taskScheduler, "ftl-sim.fib");
 
 	ftl::TaskSchedulerInitOptions options;
-	options.Behavior = ftl::EmptyQueueBehavior::Sleep;
+	options.Behavior = ftl::EmptyQueueBehavior::Yield;
 	options.FiberPoolSize = 200;
 	options.ThreadPoolSize = 12;
 	options.Callbacks.OnFibersCreated = [](void *context, unsigned fiberCount) {
 		RegisterFibers(fiberCount);
-	};
-	options.Callbacks.OnThreadsCreated = [](void *context, unsigned threadCount) {
-		RegisterThreads(threadCount);
 	};
 	options.Callbacks.OnFiberStateChanged = [](void *context, unsigned fiberIndex, ftl::FiberState newState) {
 		switch (newState) {
@@ -121,6 +118,6 @@ int main() {
 		printf("Counter value: %u\n", globalCounter.load());
 	}
 
-	printf("%s", DumpProfiler().c_str());
+	CloseProfileFile();
 	TermProfiler();
 }
